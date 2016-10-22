@@ -1,0 +1,585 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<!-- 
+Copyright (c) 2015 Mike Teachman
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE. 
+
+Version History
+===============
+v1.0 November xx 2015:  initial release with ThingSpeak and Sparkfun support.  Data plotted as a line chart.
+
+Gadget Summary
+==============
+Displays a line chart for data coming from ThingSpeak and Sparkfun Data "cloud" services.  Uses
+Google Charts API to format the charts.
+-->
+<Module>
+	<!-- ============== Start Gadget Module Preferences ==============
+    - Module Preferences are presented in a menu when you edit the gadget in a Google Site
+    - these preferences are saved on the Google Site server 
+    - The height preference is calculated to work with the chart height in the gadget code (best not to change it) -->
+  <ModulePrefs 
+    title="IoT Charting Gadget" 
+    height="520" 
+    author="Mike Teachman">
+    <Require feature="dynamic-height"/>
+  </ModulePrefs>
+  <!-- ============== End Gadget Module Preferences ============== -->
+
+	<!-- ============== Start Gadget User Preferences ==============
+    - User Preferences are presented in a menu when you edit the gadget in a Google Site
+    - these preferences are saved on the Google Site server 
+    - the gadget Javascript code reads these preferences to customize the chart -->
+    
+  <UserPref name="upDataStreamPublicKey" display_name="Channel ID (ThingSpeak) or Public Key (Sparkfun)" default_value="29084"/>
+  <UserPref name="upDataField" display_name="Field" default_value="field1"/>
+  <UserPref name="upNumPointsToPlot" display_name="Number Points To Chart (max 8000 for ThingSpeak)" default_value="1000"/>
+  <UserPref name="upStartDate" display_name="Start Date (optional - ThingSpeak only)" default_value=""/>  
+  <UserPref name="upEndDate" display_name="End Date (optional - ThingSpeak only)" default_value=""/>  
+  <UserPref name="upMinDataValue" display_name="Min Value (optional - blank=auto scale)" default_value=""/>  
+  <UserPref name="upMaxDataValue" display_name="Max Value (optional - blank=auto scale)" default_value=""/>  
+  <UserPref name="upSfChartTitle" display_name="Title (optional - Sparkfun only)" default_value=""/>  
+
+  <!-- "Data Provider" is used inside the gadget to customize the runtime behaviour for either ThingSpeak or Sparkfun 
+     e.g.  show menu items specific to either ThingSpeak or Sparkfun -->
+  <UserPref name="upDataSource" display_name="Data Provider" datatype="enum" default_value="1">
+    <EnumValue value="1" display_value="Sparkfun Data"/>
+    <EnumValue value="2" display_value="ThingSpeak"/>
+  </UserPref>
+  <!--  ShowForm:  true = show the chart options sidebar, false = hide the sidebar
+       Showing he sidebar is useful for experimenting with different chart settings.  After you have determined the 
+       best settings, those settings can be entered into the User Preferences of the gadget.  Then, the sidebar can be 
+       hidden -->
+  <UserPref name="upShowForm" display_name="Show Chart Options?" datatype="bool" default_value="true"/>
+  
+<!-- ============== End Gadget User Preferences ============== -->
+  
+  <Content type="html">
+  
+  <![CDATA[
+<!-- ===================== Start Gadget Content ===================== -->    
+<html>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
+<title>IoT Charting Gadget</title>
+
+<!-- EXTERNAL LIBS-->
+<script src="https://ajax.googleapis.com/ajax/libs/jquery/1.11.1/jquery.min.js"></script>
+<script type="text/javascript" src="https://www.google.com/jsapi"></script>    
+<script src="https://cdnjs.cloudflare.com/ajax/libs/spin.js/2.3.2/spin.min.js"></script>     <!-- Spinner -->
+  
+<!-- ===================== Start CSS Section ===================== -->  
+<style type="text/css">
+html {
+  height: 100%
+}
+body {
+  min-height: 100%;
+  margin: 0;
+  padding: 0
+} 
+#chartDiv {
+  height: 100% 
+}
+table th, table td, input, select, textarea, a  {
+  font-size : 12px;
+  font-family : Verdana,Helvetica,Arial,sans-serif;
+}
+input#chartButton {
+  height:40px;
+  width:120px;
+  color: #FFF;
+  background-color: #192538;
+  font-weight: bold;
+}
+input#chartButton:hover{
+  background:#c20b0b;
+}
+.plotOptions  /* used to initially hide chart settings sidebar */
+{
+  display: none;  
+}
+ </style>
+<!-- ===================== End CSS Section ===================== -->  
+
+<!-- ===================== Start Javascript Section ===================== -->  
+<script type="text/javascript">
+var gadgetWrapperPresent;
+
+// test to see if Gadget is running in Google Sites environment by checking for existence of 'gadgets' object
+if (typeof gadgets !== 'undefined') {
+  // running on Google Sites
+  gadgetWrapperPresent = true;
+} else {
+  // running "standalone" HTML in a browser ... e.g. you are developing the gadget Content
+  gadgetWrapperPresent = false;
+}
+
+var dataStreamPublicKey;
+var dataField;
+var numPointsToPlot;
+var startDate;
+var endDate;
+var minDataValue;
+var maxDataValue;
+var sfChartTitle;
+var dataSource; // Sparkfun Data = 1, ThingSpeak = 2
+var showForm;
+
+if (gadgetWrapperPresent) {
+  // Running as a gadget on Google Sites 
+  // Read Gadget User Preferences. These preferences are stored server-side in the Google Site
+  userPrefs = new gadgets.Prefs();
+  dataStreamPublicKey = userPrefs.getString("upDataStreamPublicKey");
+  dataField = userPrefs.getString("upDataField");
+  numPointsToPlot = userPrefs.getString("upNumPointsToPlot");
+  startDate = userPrefs.getString("upStartDate");
+  endDate = userPrefs.getString("upEndDate");
+  minDataValue = userPrefs.getString("upMinDataValue");
+  maxDataValue = userPrefs.getString("upMaxDataValue");
+  sfChartTitle = userPrefs.getString("upSfChartTitle");
+  dataSource = userPrefs.getInt("upDataSource"); // Sparkfun Data = 1, ThingSpeak = 2
+  showForm = userPrefs.getBool("upShowForm");
+  var gadgetWidth = gadgets.window.getViewportDimensions().width; // not used at this time, for reference only
+  var gadgetHeight = gadgets.window.getViewportDimensions().height; // not used at this time, for reference only
+} else {
+  // Not running in a Gadget environment - no User Preferences to read - set some defaults to facilitate development in standalone environmeent
+  dataSource = 2; // Sparkfun Data = 1, ThingSpeak = 2
+
+  if (dataSource == 1) {
+    // Sparkfun
+    dataStreamPublicKey = 'OGw6o7Z7AWsWVEZlEjj6';
+    dataField = 'tempc_hive1';
+    numPointsToPlot = 1000;
+    startDate = '';
+    endDate = '';
+    minDataValue = '';
+    maxDataValue = '';
+    sfChartTitle = 'Open Source Beehives Project';
+    showForm = true;
+  } else {
+    // ThingSpeak
+    dataStreamPublicKey = '29084'; // this seems to be a reliable channel
+    dataField = 'field1';
+    numPointsToPlot = 1000;
+    startDate = '';
+    endDate = '';
+    minDataValue = '';
+    maxDataValue = '';
+    sfChartTitle = ''; // not used for ThingSpeak
+    showForm = true;
+  }
+}
+
+// standard Google API calls to load Google Charts
+google.load('visualization', '1', {
+  packages: ['corechart']
+});
+google.setOnLoadCallback(drawChart); // calls callback when both Charts and DOM is loaded
+
+function drawChart() {
+
+  // load values into the chart settings sidebar
+  document.getElementById('formDataStreamPublicKey').value = dataStreamPublicKey;
+  document.getElementById('formDataField').value = dataField;
+  document.getElementById('formNumPointsToPlot').value = numPointsToPlot;
+  document.getElementById('formStartDate').value = startDate;
+  document.getElementById('formEndDate').value = endDate;
+  document.getElementById('formMinDataValue').value = minDataValue;
+  document.getElementById('formMaxDataValue').value = maxDataValue;
+  document.getElementById('formSfChartTitle').value = sfChartTitle;
+
+  // show the Chart Settings side panel if it has been enabled in the Gadget UserPrefs section
+  if (showForm === true) {
+    // show the options side panel
+    $("td").removeClass("plotOptions");
+  }
+
+  // Show or Hide HTML text and form inputs in the side panel depending on support for either Sparkfun Data or ThingSpeak 
+  if (dataSource == 1) {
+    // Sparkfun
+    showRow('trSparkfunChartSettings');
+    showRow('trSparkfunPublicKey');
+    showRow('trSparkfunNumberOfPoints');
+    hideRow('trThingspeakChartSettings');
+    hideRow('trThingspeakChannelID');
+    hideRow('trThingspeakNumberOfPoints');
+    hideRow('trThingspeakStartDate1');
+    hideRow('trThingspeakStartDate2');
+    hideRow('trThingspeakStartDate3');
+    hideRow('trThingspeakEndDate1');
+    hideRow('trThingspeakEndDate2');
+    hideRow('trThingspeakEndDate3');
+  } else {
+    // ThingSpeak
+    showRow('trThingspeakChartSettings');
+    showRow('trThingspeakChannelID');
+    hideRow('trSparkfunNumberOfPoints');
+    hideRow('trSparkfunChartSettings');
+    hideRow('trSparkfunPublicKey');
+    hideRow('trSparkfunNumberOfPoints');
+    hideRow('trSparkfunChartTitle1');
+    hideRow('trSparkfunChartTitle2');
+    hideRow('trSparkfunChartTitle3');
+  }
+
+  //
+  // setup for request to either ThingSpeak or Sparkfun Data services
+  // use JSONP to enable cross-domain ajax calls
+  //
+
+  var urlOption;
+  var dataOption;
+
+  if (dataSource == 1) {
+    // Sparkfun options
+    urlOption = 'https://data.sparkfun.com/output/' + dataStreamPublicKey + '.json';
+    dataOption = {
+      limit: numPointsToPlot
+        // gt: {timestamp: '2015-10-01'},  // when Sparkfun Data performance improves a timebased query might be feasible
+        // gt: {timestamp: 'now - 1day'}   // another good format for future consideration after performance improvements     
+    };
+  } else {
+    // ThingSpeak options
+    urlOption = 'https://api.thingspeak.com/channels/' + dataStreamPublicKey + '/feed.json';
+    dataOption = {
+      results: numPointsToPlot,
+      start: startDate,
+      end: endDate
+    };
+  }
+
+  var jsonData = $.ajax({
+    url: urlOption,
+    data: dataOption,
+    dataType: 'jsonp',
+    beforeSend: function() {
+      // show spinner when loading data
+      var spinnerOpts = {
+        top: '250px', // Top position relative to parent
+        left: '450px' // Left position relative to parent
+      };
+      var target = document.getElementById('chartDiv');
+      var spinner = new Spinner(spinnerOpts).spin(target);
+    }
+  }).done(function(results) {
+
+    var vertAxisTitle;
+    var chartTitle;
+
+    if (dataSource == 1) {
+      // Sparkfun
+      vertAxisTitle = dataField;
+
+      // unfortunately, the Sparkfun Data API does not yet support a JSONP callback for metadata requests.
+      // ... so it is not possible to determine the stream title.  Workaround is to allow the user to enter a title.  
+
+      if (sfChartTitle === '') {
+        // no user-defined title... create a default title
+        chartTitle = 'Sparkfun stream <' + dataStreamPublicKey + '>';
+      } else {
+        // user-defined title exists
+        chartTitle = sfChartTitle;
+      }
+    } else {
+      // ThingSpeak
+      // ThinkSpeak API has the metadata for Axis and Chart title, built into the JSON results object.
+      vertAxisTitle = results.channel[dataField];
+      chartTitle = results.channel.name;
+    }
+
+    //
+    //  Copy the time series data from the JSON object into the Google Charts object
+    //  
+
+    var chartData = new google.visualization.DataTable();
+
+    chartData.addColumn('datetime', 'Time');
+    chartData.addColumn('number', dataField);
+
+    if (dataSource == 1) {
+      // Sparkfun 
+      $.each(results, function(i, row) {
+        chartData.addRow([
+          new Date(row.timestamp),
+          parseFloat(row[dataField])
+        ]);
+      });
+    } else {
+      // ThingSpeak 
+      $.each(results.feeds, function(i, row) {
+        chartData.addRow([
+          new Date(row.created_at),
+          parseFloat(row[dataField])
+        ]);
+      });
+    }
+
+    //
+    // Google Chart Options
+    //
+
+    var chartOptions = {
+      title: chartTitle,
+      titleTextStyle: {
+        color: '#192538',
+        fontSize: 24,
+        bold: true,
+        italic: false
+      },
+      hAxis: // HORIZONTAL axis options
+      {
+        title: 'Date/Time',
+        titleTextStyle: {
+          color: '#192538',
+          fontSize: 24,
+          italic: false,
+          bold: true
+        },
+        viewWindowMode: 'maximized',
+        format: 'MMM d, y - HH:mm',
+        gridlines: {
+          count: -1 // number of horizontal gridlines '-1' = automatically compute 
+        }
+      },
+      vAxis: // VERTICAL axis options
+      {
+        title: vertAxisTitle,
+        titleTextStyle: {
+          color: '#192538',
+          fontSize: 24,
+          italic: false,
+          bold: true
+        },
+        gridlines: {
+          count: -1 // number of vertical gridlines '-1' = automatically compute 
+        },
+        viewWindow: {
+          min: minDataValue,
+          max: maxDataValue
+        }
+      },
+      chartArea: {
+        top: 50,
+        left: 100,
+        width: 800,
+        // backgroundColor: 'red',
+        height: 390
+      },
+      backgroundColor: {
+        // fill: 'yellow',
+      },
+      legend: {
+        position: 'none'
+      },
+      height: 500,
+      width: 900,
+      colors: ['#192538']
+    };
+
+    // finally ... instantiate and draw the Google Chart
+    var googleChart = new google.visualization.LineChart($('#chartDiv').get(0));
+    googleChart.draw(chartData, chartOptions);
+  });
+}
+
+function showRow(id) {
+  var row = document.getElementById(id);
+  row.style.display = '';
+}
+
+function hideRow(id) {
+  var row = document.getElementById(id);
+  row.style.display = 'none';
+}
+
+// function called each time the Update Chart button is pressed in the chart setting sidebar
+// reads all the values from the user form, then redraws the Google chart using those values
+function loadValuesFromForm() {
+  dataStreamPublicKey = document.getElementById("formDataStreamPublicKey").value;
+  dataField = document.getElementById("formDataField").value;
+  numPointsToPlot = document.getElementById("formNumPointsToPlot").value;
+  startDate = document.getElementById("formStartDate").value;
+  endDate = document.getElementById("formEndDate").value;
+  minDataValue = document.getElementById("formMinDataValue").value;
+  maxDataValue = document.getElementById("formMaxDataValue").value;
+  sfChartTitle = document.getElementById("formSfChartTitle").value;
+
+  drawChart();
+}
+</script>
+<!-- ===================== End Javascript Section ===================== -->  
+
+<!-- ===================== Start HTML Body Section ===================== -->  
+<body>
+  <table style="margin-right:auto; margin-left:0px; border:none;">
+    <tr style="vertical-align:top">
+      <td style="height: 500px; width: 900px; border:none;">
+        <div id="chartDiv"></div>
+      </td>
+      <td class="plotOptions" style="width: 15px"></td>
+      <td class="plotOptions" style="vertical-align:top">
+        <form id="frm1">
+          <table style="border:none;">
+            <tr>
+              <td style="height:3px"></td>
+            </tr>
+            <tr id="trThingspeakChartSettings">
+              <td>
+                <b>ThingSpeak Chart Settings</b>
+              </td>
+            </tr>
+            <tr id="trSparkfunChartSettings">
+              <td>
+                <b>Sparkfun Chart Settings</b>
+              </td>
+            </tr>
+            <tr>
+              <td style="height:10px"></td>
+            </tr>
+            <tr id="trThingspeakChannelID">
+              <td style="vertical-align:top">
+                <label for="formDataStreamPublicKey">Channel ID</label>
+              </td>
+            </tr>
+            <tr id="trSparkfunPublicKey">
+              <td style="vertical-align:top">
+                <label for="formDataStreamPublicKey">Public Key</label>
+              </td>
+            </tr>
+            <tr>
+              <td style="vertical-align:top">
+                <input type="text" id="formDataStreamPublicKey" maxlength="25" size="30">
+              </td>
+            </tr>
+            <tr>
+              <td style="height:3px"></td>
+            </tr>
+            <tr>
+              <td style="vertical-align:top">
+                <label for="formDataField">Field</label>
+              </td>
+            </tr>
+            <tr>
+              <td style="vertical-align:top">
+                <input type="text" id="formDataField" maxlength="20" size="30">
+              </td>
+            </tr>
+            <tr>
+              <td style="height:3px"></td>
+            </tr>
+            <tr id="trThingspeakNumberOfPoints">
+              <td style="vertical-align:top">
+                <label for="formNumPointsToPlot">Number of Points (max 8000)</label>
+              </td>
+            </tr>
+            <tr id="trSparkfunNumberOfPoints">
+              <td style="vertical-align:top">
+                <label for="formNumPointsToPlot">Number of Points</label>
+              </td>
+            </tr>
+            <tr>
+              <td style="vertical-align:top">
+                <input type="text" id="formNumPointsToPlot" maxlength="10" size="30">
+              </td>
+            </tr>
+            <tr id="trThingspeakStartDate1">
+              <td style="height:3px"></td>
+            </tr>
+            <tr id="trThingspeakStartDate2">
+              <td style="vertical-align:top">
+                <label for="formStartDate">Start Date (YYYY-MM-DD)</label>
+              </td>
+            </tr>
+            <tr id="trThingspeakStartDate3">
+              <td style="vertical-align:top">
+                <input type="text" id="formStartDate" maxlength="50" size="30">
+              </td>
+            </tr>
+            <tr id="trThingspeakEndDate1">
+              <td style="height:3px"></td>
+            </tr>
+            <tr id="trThingspeakEndDate2">
+              <td style="vertical-align:top">
+                <label for="formEndDate">End Date (YYYY-MM-DD)</label>
+              </td>
+            </tr>
+            <tr id="trThingspeakEndDate3">
+              <td style="vertical-align:top">
+                <input type="text" id="formEndDate" maxlength="50" size="30">
+              </td>
+            </tr>
+            <tr>
+              <td style="height:3px"></td>
+            </tr>
+            <tr>
+              <td style="vertical-align:top">
+                <label for="formMinDataValue">Min Value (blank=auto scale)</label>
+              </td>
+            </tr>
+            <tr>
+              <td style="vertical-align:top">
+                <input type="text" id="formMinDataValue" maxlength="20" size="30">
+              </td>
+            </tr>
+            <tr>
+              <td style="height:3px"></td>
+            </tr>
+            <tr>
+              <td style="vertical-align:top">
+                <label for="formMaxDataValue">Max Value (blank=auto scale)</label>
+              </td>
+            </tr>
+            <tr>
+              <td style="vertical-align:top">
+                <input type="text" id="formMaxDataValue" maxlength="20" size="30">
+              </td>
+            </tr>
+            <tr id="trSparkfunChartTitle1">
+              <td style="height:3px"></td>
+            </tr>
+            <tr id="trSparkfunChartTitle2">
+              <td style="vertical-align:top">
+                <label for="formSfChartTitle">Chart Title (optional)</label>
+              </td>
+            </tr>
+            <tr id="trSparkfunChartTitle3">
+              <td style="vertical-align:top">
+                <input type="text" id="formSfChartTitle" maxlength="50" size="30">
+              </td>
+            </tr>
+            <tr>
+              <td style="height:10px"></td>
+            </tr>
+            <tr>
+              <td style="text-align:left">
+                <input type="button" value="Update Chart" onclick="loadValuesFromForm()" id="chartButton">
+              </td>
+            </tr>
+          </table>
+        </form>
+      </td>
+    </tr>
+  </table>
+</body>
+
+</html>
+<!-- ===================== End HTML Section ===================== -->  
+  ]]>
+ </Content>
+</Module>
